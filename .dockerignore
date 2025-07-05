@@ -20,6 +20,11 @@ __pycache__/
 # Google Cloud SDK (매우 큰 파일)
 google-cloud-sdk/
 
+# Service Account Keys (보안상 Docker 이미지에 포함하면 안 됨)
+gcs-credentials.json
+*.json
+service-account-key.json
+
 # Test files
 test/
 *.mp4

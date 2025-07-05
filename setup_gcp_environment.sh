@@ -275,12 +275,26 @@ create_service_account() {
     PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
     CB_SA_EMAIL="$PROJECT_NUMBER@cloudbuild.gserviceaccount.com"
     
+    # Cloud Build 서비스 계정에 필요한 권한들 부여
+    log_info "Cloud Build 서비스 계정에 필요한 권한들을 부여합니다..."
+    
+    # 1. 우리가 생성한 서비스 계정을 사용할 수 있는 권한
     gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
         --member="serviceAccount:$CB_SA_EMAIL" \
         --role="roles/iam.serviceAccountUser" \
-        --project="$PROJECT_ID" > /dev/null 2>&1 || log_warning "Cloud Build 서비스 계정에 권한 부여를 실패했을 수 있습니다. 잠시 후 다시 시도해주세요."
+        --project="$PROJECT_ID" > /dev/null 2>&1 || log_warning "Cloud Build 서비스 계정에 serviceAccountUser 권한 부여를 실패했을 수 있습니다."
     
-    log_success "Cloud Build 서비스 계정에 iam.serviceAccountUser 역할이 부여되었습니다."
+    # 2. Cloud Build 서비스 계정에 Cloud Run 배포 권한 부여
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$CB_SA_EMAIL" \
+        --role="roles/run.admin" > /dev/null 2>&1 || log_warning "Cloud Build 서비스 계정에 run.admin 권한 부여를 실패했을 수 있습니다."
+    
+    # 3. Cloud Build 서비스 계정에 서비스 계정 사용 권한 부여
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$CB_SA_EMAIL" \
+        --role="roles/iam.serviceAccountUser" > /dev/null 2>&1 || log_warning "Cloud Build 서비스 계정에 프로젝트 레벨 serviceAccountUser 권한 부여를 실패했을 수 있습니다."
+    
+    log_success "Cloud Build 서비스 계정에 필요한 권한들이 부여되었습니다."
 }
 
 # Artifact Registry 저장소 생성
@@ -306,20 +320,56 @@ create_cloud_build_triggers() {
     log_info "API 전파를 위해 15초 대기..."
     sleep 15
     
+    # GitHub 레포지토리 이름과 소유자 분리
+    GITHUB_REPO_OWNER=$(echo "$GITHUB_REPO_NAME" | cut -d'/' -f1)
+    GITHUB_REPO_NAME_ONLY=$(echo "$GITHUB_REPO_NAME" | cut -d'/' -f2)
+
+    if [ -z "$GITHUB_REPO_OWNER" ] || [ -z "$GITHUB_REPO_NAME_ONLY" ]; then
+        log_error "GITHUB_REPO_NAME 형식이 잘못되었습니다. '소유자/저장소이름' 형식이어야 합니다."
+        exit 1
+    fi
+
+    # 디버깅 로그 추가
+    log_info "=== 디버깅 정보 ==="
+    log_info "GITHUB_REPO_NAME: '$GITHUB_REPO_NAME'"
+    log_info "GITHUB_REPO_OWNER: '$GITHUB_REPO_OWNER'"
+    log_info "GITHUB_REPO_NAME_ONLY: '$GITHUB_REPO_NAME_ONLY'"
+    log_info "REGION: '$REGION'"
+    log_info "REPO_NAME: '$REPO_NAME'"
+    log_info "SERVICE_NAME: '$SERVICE_NAME'"
+    log_info "SA_EMAIL: '$SA_EMAIL'"
+    log_info "BUCKET_NAME: '$BUCKET_NAME'"
+    log_info "FIRESTORE_DATABASE_ID: '$FIRESTORE_DATABASE_ID'"
+    log_info "===================="
+
     # 1. 운영(Production) 트리거 for 'main' branch
     PROD_TRIGGER_NAME="greenround-prod-github-trigger"
     if gcloud builds triggers describe "$PROD_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
         log_warning "운영 트리거 '$PROD_TRIGGER_NAME'가 이미 존재합니다."
     else
         log_info "운영(main 브랜치) 트리거 생성 중..."
+        
+        # 실제 명령어 출력 (디버깅용)
+        log_info "실행할 명령어:"
+        log_info "gcloud builds triggers create github \\"
+        log_info "  --name=\"$PROD_TRIGGER_NAME\" \\"
+        log_info "  --repo-name=\"$GITHUB_REPO_NAME_ONLY\" \\"
+        log_info "  --repo-owner=\"$GITHUB_REPO_OWNER\" \\"
+        log_info "  --branch-pattern=\"^main$\" \\"
+        log_info "  --build-config=\"cloudbuild.yaml\" \\"
+        log_info "  --region=\"global\" \\"
+        log_info "  --service-account=\"projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL\" \\"
+        log_info "  --substitutions=\"_REGION=$REGION,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID\""
+        
         gcloud builds triggers create github \
             --name="$PROD_TRIGGER_NAME" \
-            --repo-name="$GITHUB_REPO_NAME" \
+            --repo-name="$GITHUB_REPO_NAME_ONLY" \
+            --repo-owner="$GITHUB_REPO_OWNER" \
             --branch-pattern="^main$" \
             --build-config="cloudbuild.yaml" \
-            --region="$REGION" \
-            --repo-owner="" \
-            --substitutions="_REGION=$REGION,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
+            --region="global" \
+            --service-account="projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" \
+            --substitutions="_REGION=global,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
         log_success "운영 트리거가 생성되었습니다. GitHub의 'main' 브랜치에 push하면 운영 환경에 배포됩니다."
     fi
 
@@ -331,12 +381,13 @@ create_cloud_build_triggers() {
         log_info "개발(develop 브랜치) 트리거 생성 중..."
         gcloud builds triggers create github \
             --name="$DEV_TRIGGER_NAME" \
-            --repo-name="$GITHUB_REPO_NAME" \
+            --repo-name="$GITHUB_REPO_NAME_ONLY" \
+            --repo-owner="$GITHUB_REPO_OWNER" \
             --branch-pattern="^develop$" \
             --build-config="cloudbuild.yaml" \
-            --region="$REGION" \
-            --repo-owner="" \
-            --substitutions="_REGION=$REGION,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$DEV_SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
+            --region="global" \
+            --service-account="projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" \
+            --substitutions="_REGION=global,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$DEV_SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
         log_success "개발 트리거가 생성되었습니다. GitHub의 'develop' 브랜치에 push하면 개발 환경에 배포됩니다."
     fi
 }
@@ -364,27 +415,28 @@ create_env_file() {
 # =============================================================================
 # Greenround 환경 변수 설정 파일
 # =============================================================================
-# 이 파일은 로컬 개발과 프로덕션 배포 모두에서 사용됩니다.
-# Docker 빌드 시 컨테이너로 복사되어 환경 변수로 로드됩니다.
+# 이 파일은 로컬 개발용이며, CI/CD 파이프라인에도 일부 변수가 사용됩니다.
+# setup_gcp_environment.sh 스크립트에 의해 자동으로 생성됩니다.
 
-# Google Cloud 설정
+# --- GCP 리소스 정보 ---
 GCP_PROJECT_ID=$PROJECT_ID
 GCP_REGION=$REGION
+GCP_SA_EMAIL=$SA_EMAIL
+
+# 운영(Production) 환경
 GCP_SERVICE_NAME=$SERVICE_NAME
+
+# 개발(Development) 환경
+GCP_DEV_SERVICE_NAME=$DEV_SERVICE_NAME
+
+# 공용 리소스
 GCP_REPOSITORY=$REPO_NAME
 GCS_BUCKET_NAME=$BUCKET_NAME
-GOOGLE_APPLICATION_CREDENTIALS=gcs-credentials.json
-
-# 애플리케이션 설정
-ENVIRONMENT=production
-
-# Firestore 설정 (상태 영구 저장)
-ENABLE_FIRESTORE_SYNC=true
-FIRESTORE_PROJECT_ID=$PROJECT_ID
 FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID
 
-# 서비스 URL (배포 후 자동 업데이트됨)
-# SERVICE_BASE_URL=https://your-service-url.run.app
+# --- 로컬 개발용 ---
+# 이 파일은 로컬에서만 사용되며, Git에 포함되어서는 안 됩니다.
+GOOGLE_APPLICATION_CREDENTIALS=gcs-credentials.json
 EOF
     
     log_success "환경 변수 파일이 생성되었습니다: .env"
@@ -444,38 +496,54 @@ add_users_to_project() {
     done
 }
 
-# 설정 요약 출력
-print_summary() {
+# 설정 요약 출력 (1단계: init)
+print_init_summary() {
     echo ""
     echo "=========================================="
-    echo "          설정 완료 요약"
+    echo "  ✅ 1단계: GCP 인프라 초기화 완료"
     echo "=========================================="
     echo "프로젝트 ID: $PROJECT_ID"
-    
-    # 연결된 결제 계정 정보 표시
-    LINKED_BILLING=$(gcloud billing projects describe "$PROJECT_ID" --format="value(billingAccountName)" 2>/dev/null || echo "정보 없음")
-    if [ "$LINKED_BILLING" != "정보 없음" ] && [ ! -z "$LINKED_BILLING" ]; then
-        echo "결제 계정: $LINKED_BILLING"
-    else
-        echo "결제 계정: 연결되지 않음 (수동 연결 필요)"
-    fi
-    
     echo "리전: $REGION"
-    echo "서비스 이름: $SERVICE_NAME"
+    echo "운영 서비스 이름: $SERVICE_NAME"
+    echo "개발 서비스 이름: $DEV_SERVICE_NAME"
     echo "GCS 버킷: $BUCKET_NAME"
-    echo "서비스 계정: $SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+    echo "서비스 계정: $SA_EMAIL"
     echo "Artifact Registry: $REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME"
     echo ""
     echo "생성된 파일:"
-    echo "- .env (통합 환경 변수 설정 - 로컬/프로덕션 공용)"
-    echo "- gcs-credentials.json (서비스 계정 키)"
+    echo "- .env (자동 생성된 환경 변수)"
+    echo "- gcs-credentials.json (로컬 개발용 서비스 계정 키)"
     echo ""
-    echo "🔥 Firestore 기능:"
-    echo "- Firestore Native 데이터베이스 생성 완료: $FIRESTORE_DATABASE_ID"
-    echo "- 작업 상태 영구 저장 및 복구 기능 활성화"
-    echo "- Cloud Run 재시작 시 상태 손실 방지"
+    echo "------------------------------------------"
+    echo "  下一步: 手动操作"
+    echo "------------------------------------------"
+    echo "이제 GCP 콘솔에서 GitHub 저장소를 수동으로 연결해야 합니다."
     echo ""
-    echo "다음 단계:"
+    echo "1. GCP 콘솔에 접속하여 '$PROJECT_ID' 프로젝트를 선택하세요."
+    echo "2. 'Cloud Build' > '트리거' 메뉴로 이동하세요."
+    echo "3. 상단의 '저장소 연결'을 클릭하고 'GitHub'를 선택하여,"
+    echo "   '$GITHUB_REPO_NAME' 저장소를 이 프로젝트에 연결하세요."
+    echo ""
+    echo "------------------------------------------"
+    echo "  最終段階: CI/CD トリガーの接続"
+    echo "------------------------------------------"
+    echo "수동 연결이 완료되었으면, 아래 명령어를 실행하여 CI/CD 파이프라인을 최종 완성하세요."
+    echo ""
+    echo "  ./setup_gcp_environment.sh connect-github"
+    echo ""
+    echo "=========================================="
+}
+
+# 최종 요약 출력 (2단계: connect-github)
+print_final_summary() {
+    echo ""
+    echo "=========================================="
+    echo "    🎉 모든 환경 설정 완료! 🎉"
+    echo "=========================================="
+    echo "프로젝트 '$GCP_PROJECT_ID'에 CI/CD 파이프라인 구성이 완료되었습니다."
+    echo ""
+    echo "이제부터 아래 워크플로우로 개발 및 배포를 진행하세요."
+    echo ""
     echo "1. GitHub 'develop' 브랜치에서 기능 개발을 진행하고 푸시하여 개발 환경에 배포/테스트합니다."
     echo "   (git checkout -b develop && git push origin develop)"
     echo "2. 개발이 완료되면 'main' 브랜치에 머지하고 푸시하여 운영 환경에 배포합니다."
@@ -486,43 +554,69 @@ print_summary() {
 
 # 메인 함수
 main() {
-    # 필수 도구 확인
-    if ! command -v gcloud &> /dev/null; then
-        log_error "Google Cloud CLI가 설치되지 않았습니다."
-        log_info "설치 방법: https://cloud.google.com/sdk/docs/install"
-        exit 1
-    fi
-    
-    # GCP 로그인 확인
-    if ! gcloud auth list --filter="status:ACTIVE" --format="value(account)" | grep -q "@"; then
-        log_error "Google Cloud에 로그인이 필요합니다."
-        log_info "다음 명령어를 실행하세요: gcloud auth login"
-        exit 1
-    fi
-    
-    # 설정 로드 및 변수 초기화
-    load_config
-    initialize_variables
-    
-    # 설정 진행
-    create_new_project
-    setup_project
-    enable_required_apis
-    create_service_account
-    create_artifact_repository
-    create_cloud_build_triggers
-    create_storage_bucket
-    setup_firestore
-    create_env_file
-    setup_docker_auth
+    COMMAND=$1
+    shift || true # $1을 제거하여 나머지 인자를 사용 가능하게 함
 
-    # 여러 사용자 추가 (입력 없이)
-    add_users_to_project
+    case "$COMMAND" in
+        init|"")
+            # 1단계: 인프라 초기화
+            log_info "=== 1단계: GCP 인프라 초기화 시작 ==="
+            load_config
+            initialize_variables
+            
+            create_new_project
+            setup_project
+            enable_required_apis
+            create_service_account
+            create_artifact_repository
+            create_storage_bucket
+            setup_firestore
+            create_env_file
+            setup_docker_auth
+            add_users_to_project
 
-    # 완료 요약
-    print_summary
-    
-    log_success "Greenround Google Cloud 환경 설정이 완료되었습니다!"
+            print_init_summary
+            log_success "1단계가 성공적으로 완료되었습니다."
+            ;;
+
+        connect-github)
+            # 2단계: GitHub 트리거 연결
+            log_info "=== 2단계: GitHub 트리거 연결 시작 ==="
+            
+            # .env와 setup.conf 파일에서 변수 로드
+            if [ ! -f ".env" ] || [ ! -f "setup.conf" ]; then
+                log_error ".env 또는 setup.conf 파일을 찾을 수 없습니다."
+                log_error "'./setup_gcp_environment.sh init'을 먼저 실행하여 환경을 초기화하세요."
+                exit 1
+            fi
+            source .env
+            source setup.conf
+            
+            # 로드된 변수들을 스크립트 내부 변수로 재할당
+            PROJECT_ID=$GCP_PROJECT_ID
+            REGION=$GCP_REGION
+            SA_EMAIL=$GCP_SA_EMAIL
+            SERVICE_NAME=$GCP_SERVICE_NAME
+            DEV_SERVICE_NAME=$GCP_DEV_SERVICE_NAME
+            REPO_NAME=$GCP_REPOSITORY
+            BUCKET_NAME=$GCS_BUCKET_NAME
+            FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID
+            
+            setup_project # gcloud config set project
+            create_cloud_build_triggers
+            
+            print_final_summary
+            log_success "2단계가 성공적으로 완료되었습니다. 이제 자동 배포가 활성화되었습니다."
+            ;;
+
+        *)
+            log_error "알 수 없는 명령어: $COMMAND"
+            echo "사용법:"
+            echo "  ./setup_gcp_environment.sh init           # 1단계: GCP 리소스 생성"
+            echo "  ./setup_gcp_environment.sh connect-github # 2단계: GitHub 트리거 연결"
+            exit 1
+            ;;
+    esac
 }
 
 # 스크립트 실행

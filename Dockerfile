@@ -41,12 +41,9 @@ COPY backend/ backend/
 # COPY demo/ demo/
 COPY .env .env
 COPY requirements.txt .
-# Google Cloud 서비스 계정 키 파일 복사
-COPY gcs-credentials.json /app/service-account-key.json
 
-# 환경 변수 설정 (GCS 인증 및 Python Path)
-ENV GOOGLE_APPLICATION_CREDENTIALS=/app/service-account-key.json \
-    PYTHONPATH=/app/backend
+# 환경 변수 설정 (Python Path)
+ENV PYTHONPATH=/app/backend
 
 # 포트 노출
 EXPOSE 8000
