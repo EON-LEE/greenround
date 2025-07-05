@@ -1,0 +1,23 @@
+fastapi
+uvicorn[standard]
+python-multipart
+opencv-contrib-python==4.8.1.78
+mediapipe
+numpy
+scikit-learn
+pytube
+moviepy
+pillow
+pydantic
+aiofiles
+gunicorn
+python-dotenv
+
+# 3D 및 시각화 관련 (Sequence, Highlight 기능에 필요)
+# torch, torchvision 제거됨 - 백엔드에서 사용하지 않음 (MediaPipe/OpenCV 사용)
+
+
+# GCP/Docker 배포에 필요한 라이브러리
+google-cloud-storage
+google-auth
+google-cloud-firestore>=2.13.0

@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Python
+venv/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# IDE and OS specific
+.idea/
+.vscode/
+.DS_Store 
+
+# Google Cloud SDK (매우 큰 파일)
+google-cloud-sdk/
+
+# Test files
+test/
+*.mp4
+*.avi
+*.mov
+
+# Demo storage (업로드된 파일들)
+demo/highlight/storage/
+
+# Others
+ref/
+logs/
+*.log

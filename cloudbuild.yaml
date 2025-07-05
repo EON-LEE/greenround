@@ -1,0 +1,62 @@
+# =============================================================================
+# Google Cloud Build 파이프라인 설정
+# =============================================================================
+# 이 파일은 Cloud Source Repository의 'main' 브랜치에 코드가 push되면
+# Cloud Build Trigger에 의해 자동으로 실행됩니다.
+
+steps:
+# 1. Docker 이미지 빌드 및 푸시
+# 'images' 필드가 지정되어 있으면 빌드 성공 후 자동으로 Artifact Registry에 push 됩니다.
+- name: 'gcr.io/cloud-builders/docker'
+  id: Build
+  args:
+    - 'build'
+    - '-t'
+    - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
+    - '.'
+    - '-f'
+    - 'Dockerfile'
+
+# 2. Cloud Run 배포
+# 이 단계는 Cloud Build의 기본 서비스 계정으로 실행됩니다.
+# 하지만 --service-account 플래그를 통해, 배포되는 Cloud Run 서비스가 사용할 런타임 서비스 계정을
+# 우리가 'setup_gcp_environment.sh'에서 만든 'greenround-sa-...'로 지정합니다.
+# 이를 통해 Cloud Run 서비스는 최소한의 권한만으로 안전하게 실행됩니다.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  id: Deploy
+  entrypoint: gcloud
+  args:
+    - 'run'
+    - 'deploy'
+    - '${_SERVICE_NAME}'
+    - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
+    - '--service-account=${_SERVICE_ACCOUNT_EMAIL}' # 런타임 서비스 계정
+    - '--region=${_REGION}'
+    - '--platform=managed'
+    - '--allow-unauthenticated'
+    - '--port=8000'
+    - '--memory=16Gi'
+    - '--cpu=4'
+    - '--max-instances=3'
+    - '--timeout=3600'
+    - '--set-env-vars=^##^DEPLOYED_FROM=cloud-build##ENABLE_FIRESTORE_SYNC=true##GCP_PROJECT_ID=${PROJECT_ID}##GCP_REGION=${_REGION}##GCS_BUCKET_NAME=${_GCS_BUCKET_NAME}##FIRESTORE_DATABASE_ID=${_FIRESTORE_DATABASE_ID}'
+    - '--quiet'
+
+# 빌드된 이미지를 푸시할 최종 목적지
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
+
+# Trigger에서 전달받을 변수들
+# 이 값들은 Trigger 설정에서 기본값을 지정하며, 동적으로 채워집니다.
+substitutions:
+  _REGION: 'asia-northeast3'
+  _REPOSITORY: 'greenround'
+  _SERVICE_NAME: 'greenround-backend'
+  _SERVICE_ACCOUNT_EMAIL: 'sa@project.iam.gserviceaccount.com'
+  _GCS_BUCKET_NAME: 'greenround-storage-default'
+  _FIRESTORE_DATABASE_ID: 'greenround-db-default'
+
+# 빌드 옵션
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8' 
