@@ -18,10 +18,6 @@ steps:
     - 'Dockerfile'
 
 # 2. Cloud Run 배포
-# 이 단계는 Cloud Build의 기본 서비스 계정으로 실행됩니다.
-# 하지만 --service-account 플래그를 통해, 배포되는 Cloud Run 서비스가 사용할 런타임 서비스 계정을
-# 우리가 'setup_gcp_environment.sh'에서 만든 'greenround-sa-...'로 지정합니다.
-# 이를 통해 Cloud Run 서비스는 최소한의 권한만으로 안전하게 실행됩니다.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   id: Deploy
   entrypoint: gcloud
@@ -30,7 +26,6 @@ steps:
     - 'deploy'
     - '${_SERVICE_NAME}'
     - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
-    - '--service-account=${_SERVICE_ACCOUNT_EMAIL}' # 런타임 서비스 계정
     - '--region=${_REGION}'
     - '--platform=managed'
     - '--allow-unauthenticated'
@@ -40,6 +35,19 @@ steps:
     - '--max-instances=3'
     - '--timeout=3600'
     - '--set-env-vars=^##^DEPLOYED_FROM=cloud-build##ENABLE_FIRESTORE_SYNC=true##GCP_PROJECT_ID=${PROJECT_ID}##GCP_REGION=${_REGION}##GCS_BUCKET_NAME=${_GCS_BUCKET_NAME}##FIRESTORE_DATABASE_ID=${_FIRESTORE_DATABASE_ID}'
+    - '--quiet'
+
+# 3. 서비스 계정 업데이트 (배포 후)
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  id: Update-Service-Account
+  entrypoint: gcloud
+  args:
+    - 'run'
+    - 'services'
+    - 'update'
+    - '${_SERVICE_NAME}'
+    - '--service-account=${_SERVICE_ACCOUNT_EMAIL}'
+    - '--region=${_REGION}'
     - '--quiet'
 
 # 빌드된 이미지를 푸시할 최종 목적지

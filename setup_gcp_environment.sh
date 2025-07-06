@@ -1,4 +1,4 @@
-#!/bin/bash
+ㅌ#!/bin/bash
 
 # =============================================================================
 # Greenround - Google Cloud 환경 초기 설정 스크립트
@@ -18,6 +18,12 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# -----------------------------------------------------------------------------
+# gcloud CLI 트랙 설정
+# 2세대 GitHub Connection/Trigger는 현재 beta 트랙에서만 지원됩니다.
+# -----------------------------------------------------------------------------
+GCLOUD_BETA="gcloud beta"
+
 # --- 기본 설정 변수 ---
 # 이 변수들은 setup.conf 파일에서 오버라이드 됩니다.
 CREATE_NEW_PROJECT=true
@@ -35,7 +41,11 @@ PROJECT_USERS=(
 # --- GitHub 연동 설정 ---
 # Cloud Build 앱과 연동된 GitHub 저장소 이름
 # (예: "your-github-username/your-repo-name")
-GITHUB_REPO_NAME="EON-LEE/greenround-dev"
+GITHUB_REPO_NAME="EON-LEE/greenround"
+
+# 2세대 Cloud Build Connection 이름 (콘솔에서 만든 이름과 동일)
+# (예: "github-conn")
+GITHUB_CONNECTION_NAME="github-conn"
 
 # --- 권한 설정 (분리) ---
 # 1. 'setup_gcp_environment.sh'를 실행하는 관리자에게 부여될 권한
@@ -86,16 +96,27 @@ initialize_variables() {
         PROJECT_SUFFIX=$(date +%s | tail -c 6)
         PROJECT_ID="greenround-${PROJECT_SUFFIX}"
         log_info "새 프로젝트 ID 자동 생성: $PROJECT_ID"
+        
+        # 새 프로젝트이므로 새로운 리소스 서픽스 생성
+        RESOURCE_SUFFIX=$(openssl rand -hex 4 2>/dev/null || echo $(date +%s | tail -c 8))
+        log_info "새 리소스 서픽스 생성: $RESOURCE_SUFFIX"
     else
         if [ -z "$PROJECT_ID" ]; then
             log_error "CREATE_NEW_PROJECT=false로 설정한 경우, PROJECT_ID를 반드시 지정해야 합니다."
             exit 1
         fi
         log_info "기존 프로젝트 ID 사용: $PROJECT_ID"
+        
+        # 기존 프로젝트이므로 기존 리소스 서픽스 사용
+        if [ -n "$EXISTING_RESOURCE_SUFFIX" ]; then
+            RESOURCE_SUFFIX="$EXISTING_RESOURCE_SUFFIX"
+            log_info "기존 리소스 서픽스 사용: $RESOURCE_SUFFIX"
+        else
+            log_warning "EXISTING_RESOURCE_SUFFIX가 설정되지 않았습니다. 새로운 서픽스를 생성합니다."
+            RESOURCE_SUFFIX=$(openssl rand -hex 4 2>/dev/null || echo $(date +%s | tail -c 8))
+            log_info "새 리소스 서픽스 생성: $RESOURCE_SUFFIX"
+        fi
     fi
-    
-    # 리소스명 랜덤 서픽스 생성
-    RESOURCE_SUFFIX=$(openssl rand -hex 4 2>/dev/null || echo $(date +%s | tail -c 8))
     
     # 전체 리소스 이름 구성
     SERVICE_NAME="${SERVICE_NAME_PREFIX}-${RESOURCE_SUFFIX}"
@@ -108,6 +129,10 @@ initialize_variables() {
     SA_EMAIL="$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
     
     log_success "리소스 이름 구성 완료."
+    log_info "서비스 이름: $SERVICE_NAME"
+    log_info "개발 서비스 이름: $DEV_SERVICE_NAME"
+    log_info "버킷 이름: $BUCKET_NAME"
+    log_info "서비스 계정: $SA_EMAIL"
 }
 
 # 새 프로젝트 생성 (선택적)
@@ -207,6 +232,7 @@ enable_required_apis() {
         "iam.googleapis.com"
         "firestore.googleapis.com"
         "compute.googleapis.com"
+        "secretmanager.googleapis.com"
     )
     
     for api in "${apis[@]}"; do
@@ -312,82 +338,128 @@ create_artifact_repository() {
     fi
 }
 
+# GitHub Repository 리소스 등록 (2세대 Connection 방식)
+create_github_repository() {
+    log_info "GitHub Repository 리소스 등록 중..."
+    
+    # GitHub 레포지토리 이름 분리
+    GITHUB_REPO_NAME_ONLY=$(echo "$GITHUB_REPO_NAME" | cut -d'/' -f2)
+    log_info "저장소 이름: $GITHUB_REPO_NAME → $GITHUB_REPO_NAME_ONLY"
+    
+    # Repository 리소스 경로
+    REPOSITORY_RESOURCE_PATH="projects/$PROJECT_ID/locations/$REGION/connections/$GITHUB_CONNECTION_NAME/repositories/$GITHUB_REPO_NAME_ONLY"
+    log_info "Repository 리소스 경로: $REPOSITORY_RESOURCE_PATH"
+    
+    # Connection 상태 먼저 확인
+    log_info "Connection 상태 확인 중: $GITHUB_CONNECTION_NAME"
+    if ! $GCLOUD_BETA builds connections describe "$GITHUB_CONNECTION_NAME" --region="$REGION" &> /dev/null; then
+        log_error "Connection '$GITHUB_CONNECTION_NAME'이 존재하지 않거나 접근할 수 없습니다."
+        log_info "사용 가능한 Connection 목록:"
+        $GCLOUD_BETA builds connections list --region="$REGION" || log_warning "Connection 목록 조회 실패"
+        exit 1
+    fi
+    log_success "Connection '$GITHUB_CONNECTION_NAME' 상태 확인 완료"
+    
+    # Repository 리소스가 이미 존재하는지 확인
+    log_info "Repository 리소스 존재 여부 확인 중..."
+    REPO_CHECK_RESULT=""
+    if REPO_CHECK_RESULT=$($GCLOUD_BETA builds repositories describe "$REPOSITORY_RESOURCE_PATH" 2>&1); then
+        log_warning "GitHub Repository 리소스가 이미 존재합니다: $GITHUB_REPO_NAME_ONLY"
+        log_info "기존 Repository 정보:"
+        echo "$REPO_CHECK_RESULT" | head -5
+    else
+        log_info "Repository 리소스가 존재하지 않음. 생성을 시작합니다."
+        log_info "에러 메시지 (정상): $REPO_CHECK_RESULT"
+        
+        log_info "GitHub Repository 리소스 생성 중: $GITHUB_REPO_NAME → $GITHUB_REPO_NAME_ONLY"
+        log_info "실행할 명령어:"
+        log_info "$GCLOUD_BETA builds repositories create $GITHUB_REPO_NAME_ONLY \\"
+        log_info "  --connection=$GITHUB_CONNECTION_NAME \\"
+        log_info "  --region=$REGION \\"
+        log_info "  --remote-uri=https://github.com/$GITHUB_REPO_NAME"
+        
+        if REPO_CREATE_RESULT=$($GCLOUD_BETA builds repositories create "$GITHUB_REPO_NAME_ONLY" \
+            --connection="$GITHUB_CONNECTION_NAME" \
+            --region="$REGION" \
+            --remote-uri="https://github.com/$GITHUB_REPO_NAME" 2>&1); then
+            log_success "GitHub Repository 리소스가 등록되었습니다: $GITHUB_REPO_NAME_ONLY"
+            log_info "생성 결과:"
+            echo "$REPO_CREATE_RESULT" | head -5
+        else
+            log_error "GitHub Repository 리소스 생성 실패!"
+            log_error "에러 메시지: $REPO_CREATE_RESULT"
+            exit 1
+        fi
+    fi
+    
+    # Repository 상태 최종 확인
+    log_info "Repository 리소스 상태 최종 확인 중..."
+    if FINAL_CHECK=$($GCLOUD_BETA builds repositories describe "$REPOSITORY_RESOURCE_PATH" --format="value(state)" 2>&1); then
+        log_success "Repository 상태: $FINAL_CHECK"
+    else
+        log_warning "Repository 상태 확인 실패: $FINAL_CHECK"
+    fi
+}
+
 # Cloud Build Triggers 생성 (운영/개발 for GitHub)
 create_cloud_build_triggers() {
     log_info "Cloud Build Trigger 생성 중 (GitHub 연동)..."
     
-    # API가 활성화되고 전파될 시간을 줌
-    log_info "API 전파를 위해 15초 대기..."
-    sleep 15
+    # Repository 리소스가 준비될 시간을 줌
+    log_info "Repository 리소스 전파를 위해 5초 대기..."
+    sleep 5
     
-    # GitHub 레포지토리 이름과 소유자 분리
-    GITHUB_REPO_OWNER=$(echo "$GITHUB_REPO_NAME" | cut -d'/' -f1)
+    # GitHub 레포지토리 이름 분리 (2세대에서는 owner 정보가 이미 Connection에 포함됨)
     GITHUB_REPO_NAME_ONLY=$(echo "$GITHUB_REPO_NAME" | cut -d'/' -f2)
 
-    if [ -z "$GITHUB_REPO_OWNER" ] || [ -z "$GITHUB_REPO_NAME_ONLY" ]; then
-        log_error "GITHUB_REPO_NAME 형식이 잘못되었습니다. '소유자/저장소이름' 형식이어야 합니다."
+    # 2세대 Repository 리소스 경로
+    REPOSITORY_RESOURCE="projects/$PROJECT_ID/locations/$REGION/connections/$GITHUB_CONNECTION_NAME/repositories/$GITHUB_REPO_NAME_ONLY"
+
+    if [ -z "$GITHUB_REPO_NAME_ONLY" ]; then
+        log_error "GITHUB_REPO_NAME 형식이 잘못되었습니다. '저장소이름' 형식이어야 합니다."
         exit 1
     fi
 
-    # 디버깅 로그 추가
-    log_info "=== 디버깅 정보 ==="
-    log_info "GITHUB_REPO_NAME: '$GITHUB_REPO_NAME'"
-    log_info "GITHUB_REPO_OWNER: '$GITHUB_REPO_OWNER'"
-    log_info "GITHUB_REPO_NAME_ONLY: '$GITHUB_REPO_NAME_ONLY'"
-    log_info "REGION: '$REGION'"
-    log_info "REPO_NAME: '$REPO_NAME'"
-    log_info "SERVICE_NAME: '$SERVICE_NAME'"
-    log_info "SA_EMAIL: '$SA_EMAIL'"
-    log_info "BUCKET_NAME: '$BUCKET_NAME'"
-    log_info "FIRESTORE_DATABASE_ID: '$FIRESTORE_DATABASE_ID'"
-    log_info "===================="
-
     # 1. 운영(Production) 트리거 for 'main' branch
     PROD_TRIGGER_NAME="greenround-prod-github-trigger"
-    if gcloud builds triggers describe "$PROD_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
+    if $GCLOUD_BETA builds triggers describe "$PROD_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
         log_warning "운영 트리거 '$PROD_TRIGGER_NAME'가 이미 존재합니다."
     else
         log_info "운영(main 브랜치) 트리거 생성 중..."
         
         # 실제 명령어 출력 (디버깅용)
         log_info "실행할 명령어:"
-        log_info "gcloud builds triggers create github \\"
+        log_info "gcloud beta builds triggers create github \\"
         log_info "  --name=\"$PROD_TRIGGER_NAME\" \\"
-        log_info "  --repo-name=\"$GITHUB_REPO_NAME_ONLY\" \\"
-        log_info "  --repo-owner=\"$GITHUB_REPO_OWNER\" \\"
+        log_info "  --region=\"$REGION\" \\"
+        log_info "  --repository=\"$REPOSITORY_RESOURCE\" \\"
         log_info "  --branch-pattern=\"^main$\" \\"
         log_info "  --build-config=\"cloudbuild.yaml\" \\"
-        log_info "  --region=\"global\" \\"
-        log_info "  --service-account=\"projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL\" \\"
         log_info "  --substitutions=\"_REGION=$REGION,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID\""
         
-        gcloud builds triggers create github \
+        $GCLOUD_BETA builds triggers create github \
             --name="$PROD_TRIGGER_NAME" \
-            --repo-name="$GITHUB_REPO_NAME_ONLY" \
-            --repo-owner="$GITHUB_REPO_OWNER" \
+            --region="$REGION" \
+            --repository="$REPOSITORY_RESOURCE" \
             --branch-pattern="^main$" \
             --build-config="cloudbuild.yaml" \
-            --region="global" \
-            --service-account="projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" \
-            --substitutions="_REGION=global,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
+            --substitutions="_REGION=$REGION,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
         log_success "운영 트리거가 생성되었습니다. GitHub의 'main' 브랜치에 push하면 운영 환경에 배포됩니다."
     fi
 
     # 2. 개발(Development) 트리거 for 'develop' branch
     DEV_TRIGGER_NAME="greenround-dev-github-trigger"
-    if gcloud builds triggers describe "$DEV_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
+    if $GCLOUD_BETA builds triggers describe "$DEV_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
         log_warning "개발 트리거 '$DEV_TRIGGER_NAME'가 이미 존재합니다."
     else
         log_info "개발(develop 브랜치) 트리거 생성 중..."
-        gcloud builds triggers create github \
+        $GCLOUD_BETA builds triggers create github \
             --name="$DEV_TRIGGER_NAME" \
-            --repo-name="$GITHUB_REPO_NAME_ONLY" \
-            --repo-owner="$GITHUB_REPO_OWNER" \
+            --region="$REGION" \
+            --repository="$REPOSITORY_RESOURCE" \
             --branch-pattern="^develop$" \
             --build-config="cloudbuild.yaml" \
-            --region="global" \
-            --service-account="projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" \
-            --substitutions="_REGION=global,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$DEV_SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
+            --substitutions="_REGION=$REGION,_REPOSITORY=$REPO_NAME,_SERVICE_NAME=$DEV_SERVICE_NAME,_SERVICE_ACCOUNT_EMAIL=$SA_EMAIL,_GCS_BUCKET_NAME=$BUCKET_NAME,_FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID"
         log_success "개발 트리거가 생성되었습니다. GitHub의 'develop' 브랜치에 push하면 개발 환경에 배포됩니다."
     fi
 }
@@ -603,6 +675,7 @@ main() {
             FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID
             
             setup_project # gcloud config set project
+            create_github_repository
             create_cloud_build_triggers
             
             print_final_summary

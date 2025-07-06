@@ -8,6 +8,65 @@
 
 ---
 
+## 🚀 빠른 시작
+
+### 1단계: 초기 환경 설정
+
+1. **설정 파일 준비**
+   ```bash
+   cp setup.conf.example setup.conf
+   # setup.conf를 편집하여 프로젝트 설정 수정
+   ```
+
+2. **GCP 인프라 생성** (처음 한 번만)
+   ```bash
+   ./setup_gcp_environment.sh init
+   ```
+
+3. **GitHub 저장소 수동 연결**
+   - GCP 콘솔 > Cloud Build > 트리거 > '저장소 연결'
+   - GitHub에서 해당 저장소 연결
+
+4. **CI/CD 파이프라인 완성**
+   ```bash
+   ./setup_gcp_environment.sh connect-github
+   ```
+
+### 2단계: 재배포 및 업데이트
+
+기존 프로젝트에 재배포하거나 설정을 업데이트할 때:
+
+1. **setup.conf 수정**
+   ```bash
+   # 기존 프로젝트 사용으로 변경
+   CREATE_NEW_PROJECT=false
+   PROJECT_ID="your-existing-project-id"
+   
+   # 기존 리소스 서픽스 지정 (중요!)
+   # .env 파일에서 확인 가능 (예: greenround-backend-abc123에서 "abc123" 부분)
+   EXISTING_RESOURCE_SUFFIX="abc123"
+   ```
+
+2. **업데이트 실행**
+   ```bash
+   # 필요한 경우 인프라 업데이트
+   ./setup_gcp_environment.sh init
+   
+   # 트리거 재설정
+   ./setup_gcp_environment.sh connect-github
+   ```
+
+### 리소스 서픽스 확인 방법
+
+기존 배포 후 생성된 `.env` 파일에서 리소스 이름을 확인:
+```bash
+cat .env | grep SERVICE_NAME
+# 예: GCP_SERVICE_NAME=greenround-backend-abc123
+# 여기서 "abc123"이 EXISTING_RESOURCE_SUFFIX에 입력할 값
+```
+
+---
+
 ## 🚀 개발 및 배포 워크플로우
 
 이 프로젝트는 GCP(Google Cloud Platform) 기반의 완전 자동화된 CI/CD 파이프라인을 사용합니다.
