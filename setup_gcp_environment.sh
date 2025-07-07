@@ -67,10 +67,15 @@ ADMIN_ROLES=(
 # 2. Cloud Run 서비스가 런타임에 사용할 서비스 계정에게 부여될 최소 권한
 # 애플리케이션 실행에 꼭 필요한 권한만 포함합니다. (최소 권한 원칙)
 RUNTIME_SERVICE_ACCOUNT_ROLES=(
-    "roles/storage.objectAdmin"   # GCS 버킷의 객체(파일)만 관리
-    "roles/datastore.user"        # Firestore 데이터베이스 읽기/쓰기
-    "roles/logging.logWriter"     # 로그 작성
-    "roles/monitoring.metricWriter" # 모니터링 메트릭 작성
+    "roles/storage.objectAdmin"       # GCS 버킷의 객체(파일)만 관리
+    "roles/datastore.user"            # Firestore 데이터베이스 읽기/쓰기
+    "roles/logging.logWriter"         # 로그 작성
+    "roles/monitoring.metricWriter"   # 모니터링 메트릭 작성
+    "roles/cloudbuild.builds.editor"  # Cloud Build 트리거 생성/수정 권한
+    "roles/source.admin"              # Source Repository 관리 권한 (GitHub 연결용)
+    "roles/secretmanager.admin"       # Secret Manager 접근 권한 (GitHub 토큰용)
+    "roles/run.admin"                 # Cloud Run 서비스 배포/관리 권한
+    "roles/artifactregistry.writer"   # Artifact Registry 이미지 푸시 권한
 )
 
 # 설정 파일 로드
