@@ -326,6 +326,11 @@ create_service_account() {
         --member="serviceAccount:$CB_SA_EMAIL" \
         --role="roles/iam.serviceAccountUser" > /dev/null 2>&1 || log_warning "Cloud Build 서비스 계정에 프로젝트 레벨 serviceAccountUser 권한 부여를 실패했을 수 있습니다."
     
+    # 4. Cloud Build 서비스 계정에 Artifact Registry Writer 권한 부여 (Docker 이미지 푸시용)
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:$CB_SA_EMAIL" \
+        --role="roles/artifactregistry.writer" > /dev/null 2>&1 || log_warning "Cloud Build 서비스 계정에 artifactregistry.writer 권한 부여를 실패했을 수 있습니다."
+    
     log_success "Cloud Build 서비스 계정에 필요한 권한들이 부여되었습니다."
 }
 
@@ -484,6 +489,7 @@ setup_docker_auth() {
     log_success "Docker 인증이 설정되었습니다."
 }
 
+#
 # 사용자 추가 함수 (입력 없이 배열 순회)
 add_users_to_project() {
     log_info "GCP 프로젝트에 여러 사용자 추가 중..."

@@ -5,8 +5,7 @@
 # Cloud Build Trigger에 의해 자동으로 실행됩니다.
 
 steps:
-# 1. Docker 이미지 빌드 및 푸시
-# 'images' 필드가 지정되어 있으면 빌드 성공 후 자동으로 Artifact Registry에 push 됩니다.
+# 1. Docker 이미지 빌드
 - name: 'gcr.io/cloud-builders/docker'
   id: Build
   args:
@@ -16,6 +15,13 @@ steps:
     - '.'
     - '-f'
     - 'Dockerfile'
+
+# 1.5. Docker 이미지 푸시 (명시적)
+- name: 'gcr.io/cloud-builders/docker'
+  id: Push
+  args:
+    - 'push'
+    - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
 
 # 2. Cloud Run 배포
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
