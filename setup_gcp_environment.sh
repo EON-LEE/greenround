@@ -76,6 +76,7 @@ RUNTIME_SERVICE_ACCOUNT_ROLES=(
     "roles/secretmanager.admin"       # Secret Manager 접근 권한 (GitHub 토큰용)
     "roles/run.admin"                 # Cloud Run 서비스 배포/관리 권한
     "roles/artifactregistry.writer"   # Artifact Registry 이미지 푸시 권한
+    "roles/iam.serviceAccountUser"    # 다른 서비스 계정 사용 권한 (actAs)
 )
 
 # 설정 파일 로드
