@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 # 설정
 # SERVICE_URL = "http://localhost:8000"  # 로컬 테스트용
-SERVICE_URL = "https://greenround-backend-a25b4dc3-576367655531.europe-west1.run.app"
+SERVICE_URL = "https://greenround-backend-d9932024-728389648654.europe-west1.run.app"
 VIDEO_FILE = "/Users/eonlee/Documents/Projects/golf-3d-analyzer/test/KakaoTalk_Video_2025-05-31-20-46-31.mp4"
 # VIDEO_FILE = "/Users/eonlee/Documents/Projects/golf-3d-analyzer/test/output_video_dWiFxa67RYE.mp4"
 

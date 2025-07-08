@@ -558,6 +558,108 @@ print_init_summary() {
     echo "=========================================="
 }
 
+# 리소스 정리 함수
+cleanup_resources() {
+    log_warning "⚠️  리소스 정리를 시작합니다. 이 작업은 되돌릴 수 없습니다!"
+    echo ""
+    echo "정리될 리소스들:"
+    echo "- Cloud Build 트리거"
+    echo "- Cloud Run 서비스"
+    echo "- Artifact Registry 저장소"
+    echo "- GCS 버킷 (모든 파일 포함)"
+    echo "- 서비스 계정"
+    echo "- 로컬 인증 파일들"
+    echo ""
+    echo "⚠️  주의: Firestore 데이터베이스는 콘솔에서 수동으로 삭제해야 합니다."
+    echo ""
+    read -p "정말로 모든 리소스를 삭제하시겠습니까? (DELETE 입력): " confirm
+    
+    if [ "$confirm" != "DELETE" ]; then
+        log_info "리소스 정리가 취소되었습니다."
+        return
+    fi
+    
+    log_info "리소스 정리 시작..."
+    
+    # Cloud Build 트리거 삭제
+    log_info "Cloud Build 트리거 삭제 중..."
+    PROD_TRIGGER_NAME="greenround-prod-github-trigger"
+    DEV_TRIGGER_NAME="greenround-dev-github-trigger"
+    
+    if $GCLOUD_BETA builds triggers describe "$PROD_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
+        $GCLOUD_BETA builds triggers delete "$PROD_TRIGGER_NAME" --region="$REGION" --quiet
+        log_success "운영 트리거 삭제 완료: $PROD_TRIGGER_NAME"
+    fi
+    
+    if $GCLOUD_BETA builds triggers describe "$DEV_TRIGGER_NAME" --region="$REGION" &> /dev/null; then
+        $GCLOUD_BETA builds triggers delete "$DEV_TRIGGER_NAME" --region="$REGION" --quiet
+        log_success "개발 트리거 삭제 완료: $DEV_TRIGGER_NAME"
+    fi
+    
+    # Cloud Run 서비스 삭제
+    log_info "Cloud Run 서비스 삭제 중..."
+    if gcloud run services describe "$SERVICE_NAME" --region="$REGION" &> /dev/null; then
+        gcloud run services delete "$SERVICE_NAME" --region="$REGION" --quiet
+        log_success "운영 서비스 삭제 완료: $SERVICE_NAME"
+    fi
+    
+    if gcloud run services describe "$DEV_SERVICE_NAME" --region="$REGION" &> /dev/null; then
+        gcloud run services delete "$DEV_SERVICE_NAME" --region="$REGION" --quiet
+        log_success "개발 서비스 삭제 완료: $DEV_SERVICE_NAME"
+    fi
+    
+    # Artifact Registry 저장소 삭제
+    log_info "Artifact Registry 저장소 삭제 중..."
+    if gcloud artifacts repositories describe "$REPO_NAME" --location="$REGION" &> /dev/null; then
+        gcloud artifacts repositories delete "$REPO_NAME" --location="$REGION" --quiet
+        log_success "Artifact Registry 삭제 완료: $REPO_NAME"
+    fi
+    
+    # GCS 버킷 삭제
+    log_info "GCS 버킷 삭제 중..."
+    if gsutil ls "gs://$BUCKET_NAME" &> /dev/null; then
+        gsutil rm -r "gs://$BUCKET_NAME"
+        log_success "GCS 버킷 삭제 완료: $BUCKET_NAME"
+    fi
+    
+    # 서비스 계정 삭제
+    log_info "서비스 계정 삭제 중..."
+    if gcloud iam service-accounts describe "$SA_EMAIL" &> /dev/null; then
+        gcloud iam service-accounts delete "$SA_EMAIL" --quiet
+        log_success "서비스 계정 삭제 완료: $SA_EMAIL"
+    fi
+    
+    # 로컬 파일 정리
+    log_info "로컬 인증 파일 정리 중..."
+    if [ -f ".env" ]; then
+        rm .env
+        log_success ".env 파일 삭제 완료"
+    fi
+    
+    if [ -f "gcs-credentials.json" ]; then
+        rm gcs-credentials.json
+        log_success "gcs-credentials.json 파일 삭제 완료"
+    fi
+    
+    # 백업 파일들도 정리
+    if ls gcs-credentials.json.backup.* &> /dev/null; then
+        rm gcs-credentials.json.backup.*
+        log_success "백업 파일들 정리 완료"
+    fi
+    
+    log_success "🎉 모든 리소스가 정리되었습니다!"
+    echo ""
+    echo "=========================================="
+    echo "  정리 완료 - 다음 단계"
+    echo "=========================================="
+    echo "1. Firestore 데이터베이스는 GCP 콘솔에서 수동으로 삭제하세요:"
+    echo "   https://console.cloud.google.com/firestore/databases?project=$PROJECT_ID"
+    echo ""
+    echo "2. 새로운 환경을 생성하려면 아래 명령을 실행하세요:"
+    echo "   ./setup_gcp_environment.sh init"
+    echo "=========================================="
+}
+
 # 최종 요약 출력 (2단계: connect-github)
 print_final_summary() {
     echo ""
@@ -633,11 +735,39 @@ main() {
             log_success "2단계가 성공적으로 완료되었습니다. 이제 자동 배포가 활성화되었습니다."
             ;;
 
+        cleanup)
+            # 3단계: 리소스 정리
+            log_info "=== 리소스 정리 시작 ==="
+            
+            # .env와 setup.conf 파일에서 변수 로드
+            if [ ! -f ".env" ] || [ ! -f "setup.conf" ]; then
+                log_error ".env 또는 setup.conf 파일을 찾을 수 없습니다."
+                log_error "정리할 리소스 정보를 찾을 수 없습니다."
+                exit 1
+            fi
+            source .env
+            source setup.conf
+            
+            # 로드된 변수들을 스크립트 내부 변수로 재할당
+            PROJECT_ID=$GCP_PROJECT_ID
+            REGION=$GCP_REGION
+            SA_EMAIL=$GCP_SA_EMAIL
+            SERVICE_NAME=$GCP_SERVICE_NAME
+            DEV_SERVICE_NAME=$GCP_DEV_SERVICE_NAME
+            REPO_NAME=$GCP_REPOSITORY
+            BUCKET_NAME=$GCS_BUCKET_NAME
+            FIRESTORE_DATABASE_ID=$FIRESTORE_DATABASE_ID
+            
+            setup_project # gcloud config set project
+            cleanup_resources
+            ;;
+
         *)
             log_error "알 수 없는 명령어: $COMMAND"
             echo "사용법:"
             echo "  ./setup_gcp_environment.sh init           # 1단계: GCP 리소스 생성"
             echo "  ./setup_gcp_environment.sh connect-github # 2단계: GitHub 트리거 연결"
+            echo "  ./setup_gcp_environment.sh cleanup        # 리소스 정리"
             exit 1
             ;;
     esac
